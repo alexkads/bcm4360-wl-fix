@@ -85,6 +85,23 @@ journalctl -b -u wl-disable-vht      # "802.11ac off"
 
 Other distributions: the patch and `wlctl` are distro-independent. Apply the patch to your `broadcom-sta` / `wl` DKMS source, rebuild, and run `wl-disable-vht` (or `wlctl cmd 3; wlctl set vhtmode 0; wlctl cmd 2`) before your network manager starts.
 
+## Reproducing the tests (everything used in the investigation)
+
+All scripts live in [`tests/`](tests/) and run on Fedora; most need root.
+
+| script | what it replicates |
+|---|---|
+| `sudo tests/check.sh` | post-install verification (patched module loaded, `vhtmode=0`, services, kernel hook, gateway); exit 0 only if all pass |
+| `tests/stall-test.sh -s SERVER` | the stress test with automatic stall detection (≥ 3 s at 0 bit/s); `-t 600` long download, `-d up` upload, `-m bursts -n 20` alternating 60 s bursts. Needs `iperf3 -s --rcv-timeout 15000` on another LAN host |
+| `sudo tests/trace-wl.sh start\|show\|stop` | the kprobe trace that located the stall (`wl_isr`/`wl_dpc` keep running, `wl_sendup` drops to 0) |
+| `tests/regenerate-patch.sh [--build]` | recreates the patch against the installed RPM Fusion SRPM (and proves it compiles) |
+| `sudo tests/experiments/aspm.sh off` | hypothesis 1: PCIe ASPM off (not the cause) |
+| `sudo tests/experiments/passivemode.sh on` | hypothesis 6: `passivemode=1` (not enough) |
+| `sudo tests/experiments/vht.sh on\|off` | hypothesis 7: 802.11ac on/off (**the fix**); `on` brings the stall back for an A/B test |
+| `sudo tests/experiments/wl-reload.sh` | reload `wl` with a PCI bus reset (what actually recovers a stalled chip) |
+
+Typical A/B check: `vht.sh on` → `stall-test.sh -s SERVER` (expect stalls within minutes) → `vht.sh off` → `stall-test.sh -s SERVER -t 1200` (expect 0). Scripts that reload the driver drop the Wi-Fi for ~20 s: run them on the console, in `tmux`, or with `nohup` when connected over that same Wi-Fi.
+
 ## Uninstall
 
 ```bash
