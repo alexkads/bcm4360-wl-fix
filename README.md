@@ -106,6 +106,6 @@ This removes every file, the service and the `updates/wl.ko` modules, so the sto
 
 - Nothing from Broadcom is redistributed here. The build script uses the SRPM that `akmod-wl` already installed.
 - Full investigation, with every test and data point: [`docs/investigation.md`](docs/investigation.md).
-- Background issue: see this repository's Issues tab.
+- Background, status and acceptance criteria: [issue #1](https://github.com/alexkads/bcm4360-wl-fix/issues/1).
 
 License: MIT (our scripts, tool and patch). The `wl` driver itself remains under Broadcom's license.
