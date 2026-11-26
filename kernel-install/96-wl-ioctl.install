@@ -1,0 +1,8 @@
+#!/bin/bash
+# kernel-install plugin: when a kernel is added, also build the patched wl for it.
+# If kernel-devel is not there yet, wl-disable-vht.service builds it on next boot.
+# SPDX-License-Identifier: MIT
+[ "${1:-}" = add ] || exit 0
+/usr/local/sbin/wl-ioctl-build "$2" >> /var/log/wl-ioctl.log 2>&1 ||
+  echo "$(date -Is) build for $2 failed; wl-disable-vht.service will retry at boot" >> /var/log/wl-ioctl.log
+exit 0

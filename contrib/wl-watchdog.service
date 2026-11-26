@@ -1,0 +1,13 @@
+[Unit]
+Description=Broadcom wl watchdog (recover a stalled interface without rebooting)
+Documentation=https://github.com/alexkads/bcm4360-wl-fix
+After=NetworkManager.service wl-disable-vht.service
+Wants=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/wl-watchdog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

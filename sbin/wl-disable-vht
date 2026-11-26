@@ -1,0 +1,43 @@
+#!/bin/bash
+# wl-disable-vht - turn 802.11ac (VHT) off in the Broadcom STA (wl) driver.
+#
+# With 802.11ac the closed wl core stalls its receive (DMA) path under fast
+# downloads (A-MPDU bursts of up to ~1 MB): the link stays "connected" but no
+# packet is delivered until the chip is reset. With vhtmode=0 the chip runs
+# 802.11n (A-MPDU up to 64 KB) and did not stall. See README.md.
+#
+# Requires the patched module (wl-ioctl-build) and wlctl.
+#
+# SPDX-License-Identifier: MIT
+set -u
+WLCTL=${WLCTL:-/usr/local/sbin/wlctl}
+
+iface=""
+for _ in $(seq 1 30); do
+  for d in /sys/class/net/*; do
+    [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = wl ] && { iface=$(basename "$d"); break 2; }
+  done
+  sleep 0.5
+done
+[ -n "$iface" ] || { echo "wl-disable-vht: no interface bound to the wl driver"; exit 0; }
+
+cur=$("$WLCTL" -i "$iface" get vhtmode 2>/dev/null) || {
+  echo "⚠️  wl-disable-vht: the loaded wl module does not accept settings (not the patched build?); 802.11ac stays ON"
+  exit 0
+}
+if [ "$cur" = "vhtmode=0" ]; then
+  echo "📶 $iface: 802.11ac already off"
+  exit 0
+fi
+
+# vhtmode can only be changed while the driver is down.
+"$WLCTL" -i "$iface" cmd 3 >/dev/null &&
+  "$WLCTL" -i "$iface" set vhtmode 0 >/dev/null &&
+  "$WLCTL" -i "$iface" cmd 2 >/dev/null
+echo "📶 $iface: $("$WLCTL" -i "$iface" get vhtmode) (802.11ac off)"
+
+# If NetworkManager was already connected, the down/up dropped the association.
+if systemctl -q is-active NetworkManager 2>/dev/null; then
+  nmcli device connect "$iface" >/dev/null 2>&1 || true
+fi
+exit 0

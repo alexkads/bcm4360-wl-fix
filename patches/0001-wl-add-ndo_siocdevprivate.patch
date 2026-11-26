@@ -1,0 +1,46 @@
+--- a/src/wl/sys/wl_linux.c
++++ b/src/wl/sys/wl_linux.c
+@@ -444,6 +444,20 @@
+ 
+ #if defined(WL_USE_NETDEV_OPS)
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
++/*
++ * Since Linux 5.15, SIOCDEVPRIVATE issued from user space is delivered through
++ * ndo_siocdevprivate instead of ndo_do_ioctl. Without this hook the wl private
++ * ioctl (WLC_GET_VAR / WLC_SET_VAR / WLC_UP / WLC_DOWN) is unreachable from user
++ * space, so driver settings such as "vhtmode" cannot be changed.
++ */
++static int wl_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
++			     void __user *data, int cmd)
++{
++	return wl_ioctl(dev, ifr, SIOCDEVPRIVATE);
++}
++#endif
++
+ static const struct net_device_ops wl_netdev_ops =
+ {
+ 	.ndo_open = wl_open,
+@@ -456,14 +470,20 @@
+ #else
+ 	.ndo_set_multicast_list = wl_set_multicast_list,
+ #endif
+-	.ndo_do_ioctl = wl_ioctl
++	.ndo_do_ioctl = wl_ioctl,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
++	.ndo_siocdevprivate = wl_siocdevprivate,
++#endif
+ };
+ 
+ static const struct net_device_ops wl_netdev_monitor_ops =
+ {
+ 	.ndo_start_xmit = wl_monitor_start,
+ 	.ndo_get_stats = wl_get_stats,
+-	.ndo_do_ioctl = wl_ioctl
++	.ndo_do_ioctl = wl_ioctl,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
++	.ndo_siocdevprivate = wl_siocdevprivate,
++#endif
+ };
+ #endif 
+ 

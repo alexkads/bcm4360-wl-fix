@@ -1,0 +1,17 @@
+[Unit]
+Description=Broadcom wl: turn 802.11ac off (the closed core stalls RX under 802.11ac bursts)
+Documentation=https://github.com/alexkads/bcm4360-wl-fix
+After=systemd-modules-load.service
+Wants=network-pre.target
+Before=network-pre.target NetworkManager.service wpa_supplicant.service iwd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A kernel without the patched module (e.g. the kernel-install hook failed):
+# build it now and swap the loaded wl for it.
+ExecStartPre=-/bin/bash -c '[ -e /lib/modules/$(uname -r)/updates/wl.ko ] || { /usr/local/sbin/wl-ioctl-build && modprobe -r wl && modprobe wl; }'
+ExecStart=/usr/local/sbin/wl-disable-vht
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,93 @@
+#!/bin/bash
+# wl-watchdog - recover a stalled Broadcom STA (wl) interface without rebooting.
+#
+# Optional safety net. Pings the default gateway every 30 s through the wl
+# interface. After ~2 min without an answer it:
+#   1. logs a chip diagnosis to the journal (PCI config, link state, IRQ rate),
+#   2. unloads wl, resets the chip with a PCI secondary bus reset, reloads wl,
+#      re-applies wl-disable-vht and restarts wpa_supplicant + NetworkManager.
+# After 2 failed recoveries, and only if the machine has been up for more than
+# 30 min (to avoid reboot loops when the router itself is down), it reboots.
+#
+# Reloading only the module is NOT enough: the chip stays stuck and
+# wpa_supplicant cannot grab the new interface. The bus reset is what works.
+#
+# Log: journalctl -u wl-watchdog; incidents: /var/lib/wl-watchdog/incidents.log
+#
+# SPDX-License-Identifier: MIT
+set -u
+LOG=/var/lib/wl-watchdog/incidents.log
+mkdir -p "${LOG%/*}"
+fails=0; recoveries=0; since=0
+
+wl_iface() {
+  local d
+  for d in /sys/class/net/*; do
+    [ "$(basename "$(readlink -f "$d/device/driver" 2>/dev/null)")" = wl ] && { basename "$d"; return; }
+  done
+}
+gateway() { ip route show default dev "$1" 2>/dev/null | awk '{print $3; exit}'; }
+wl_irqs() { awk '/ wl|wl[0-9]|wlp/{s=0; for(i=2;i<=NF;i++) if($i ~ /^[0-9]+$/) s+=$i; print s; exit}' /proc/interrupts; }
+
+IF=${WL_IF:-}
+for _ in $(seq 1 60); do [ -n "$IF" ] && break; IF=$(wl_iface); sleep 1; done
+[ -n "$IF" ] || { echo "wl-watchdog: no wl interface found"; exit 1; }
+PCI=$(basename "$(readlink -f "/sys/class/net/$IF/device")")
+DEV=/sys/bus/pci/devices/$PCI
+GW_FALLBACK=$(gateway "$IF")
+
+diagnose() {
+  echo "🔎 chip diagnosis ($PCI):"
+  echo "   PCI vendor id (ffff = chip fell off the bus): $(setpci -s "$PCI" VENDOR_ID 2>&1)"
+  lspci -vvv -s "$PCI" 2>/dev/null | grep -E "DevSta:|LnkCtl:|LnkSta:|UESta:|CESta:" | sed 's/^\s*/   /'
+  local a b; a=$(wl_irqs); sleep 5; b=$(wl_irqs)
+  echo "   wl interrupts in 5 s: $(( ${b:-0} - ${a:-0} ))"
+  ip -s link show "$IF" 2>/dev/null | sed 's/^/   /' | head -8
+}
+
+recover() {
+  echo "🔧 recovering: unload wl, PCI bus reset, reload"
+  modprobe -r wl; sleep 2
+  if echo 1 > "$DEV/reset" 2>/dev/null; then echo "   bus reset: ok"
+  else echo "   bus reset failed; remove + rescan"; echo 1 > "$DEV/remove"; sleep 2; echo 1 > /sys/bus/pci/rescan; fi
+  sleep 2; modprobe wl; sleep 3
+  for _ in $(seq 1 20); do [ -e "/sys/class/net/$IF" ] && break; sleep 0.5; done
+  [ -x /usr/local/sbin/wl-disable-vht ] && /usr/local/sbin/wl-disable-vht
+  systemctl restart wpa_supplicant 2>/dev/null; sleep 2
+  systemctl restart NetworkManager 2>/dev/null; sleep 15
+  nmcli radio wifi on >/dev/null 2>&1; nmcli device connect "$IF" >/dev/null 2>&1 || true
+}
+
+echo "📶 watching $IF ($PCI), gateway $(gateway "$IF")"
+while true; do
+  gw=$(gateway "$IF"); gw=${gw:-${GW_FALLBACK:-192.168.0.1}}
+  if ping -c 1 -W 3 -I "$IF" "$gw" >/dev/null 2>&1; then
+    if (( fails >= 4 )); then
+      echo "✅ back after $(( $(date +%s) - since ))s ($recoveries recovery(ies))"
+      echo "$(date -Is) back after $(( $(date +%s) - since ))s, $recoveries recovery(ies)" >> "$LOG"
+    fi
+    fails=0; recoveries=0; since=0
+  else
+    fails=$((fails + 1))
+    (( fails == 1 )) && since=$(date +%s)
+    if (( fails >= 4 && fails % 4 == 0 )); then
+      down=$(( $(date +%s) - since )); up=$(cut -d. -f1 /proc/uptime)
+      if (( recoveries >= 2 )); then
+        if (( up > 1800 )); then
+          echo "🚨 no network for ${down}s after $recoveries recoveries: rebooting"
+          echo "$(date -Is) reboot: no network for ${down}s after $recoveries recoveries" >> "$LOG"
+          systemctl reboot; exit 0
+        fi
+        echo "⏳ no network for ${down}s, but booted ${up}s ago: not rebooting again (router down?)"
+        sleep 30; continue
+      fi
+      recoveries=$((recoveries + 1))
+      echo "🔴 STALL: gateway $gw silent for ${down}s (recovery $recoveries)"
+      (( recoveries == 1 )) && echo "$(date -Is) stall (uptime ${up}s)" >> "$LOG"
+      diagnose
+      recover
+      continue
+    fi
+  fi
+  sleep 30
+done
